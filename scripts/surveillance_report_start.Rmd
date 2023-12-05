@@ -1,0 +1,48 @@
+---
+title: "Surveillance Report"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_packages}
+# This chunk loads packages
+pacman::p_load(
+  rio,          # for importing data
+  here,         # for locating files
+  janitor,      # for data cleaning  
+  lubridate,    # for date cleaning
+  epikit,       # for easy inline code
+  scales,       # for percents and date labels
+  officer,      # border lines
+  flextable,    # make HTML tables
+  gtsummary,    # for nice tables
+  tidyverse     # for data management and visualization
+)
+```
+
+
+```{r import_data}
+# This chunk imports data
+surv <- import(here("data", "clean", "linelist_combined_20141201.rds"))
+```
+
+# Epidemic curve
+Your text here.
+
+```{r hist}
+# This chunk will plot a histogram
+# of wt_kg column
+
+surv %>% 
+  ggplot(aes(x = wt_kg)) +   
+  geom_histogram()
+
+```
+
+# Other content
+Your text here.
+
