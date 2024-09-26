@@ -1,0 +1,105 @@
+---
+title: "Surveillance Deck"
+author: "Vivek Jason"
+date: "2024-09-26"
+output: 
+  powerpoint_presentation:
+    reference_doc: rstudio-template.pptx
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+## Epi curve
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#load pacakges
+pacman::p_load(
+  rio,
+  here,
+  janitor,
+  lubridate,
+  tidyverse
+)
+
+# import data
+surv <- rio::import(here("data", "clean", "linelist_combined_20141201.rds"))
+
+# epi curve
+# Generate weekly date sequence from Monday prior to first case 
+weekly_breaks <- seq.Date(
+      from = floor_date(min(surv$date_onset, na.rm=T), "week", week_start = 1), 
+      to   = ceiling_date(max(surv$date_onset, na.rm=T), "week", week_start = 1), 
+      by   = "week")     
+
+
+weekly_breaks <- seq.Date(
+    from = floor_date(min(surv$date_onset, na.rm=T), "week", week_start = 1), 
+    to   = ceiling_date(max(surv$date_onset, na.rm=T), "week", week_start = 1), 
+    by   = "week")     
+
+
+
+ggplot(data = surv) + 
+    geom_histogram(
+    mapping = aes(x = date_onset), 
+    breaks = weekly_breaks, 
+    closed = "left",
+    color = "darkblue",     
+    fill = "lightblue")+ 
+  scale_x_date(
+    expand            = c(0,0),            
+    date_breaks       = "4 weeks",        
+    date_minor_breaks = "week",           
+    date_labels       = "%a\n%d %b\n%Y")+ 
+  scale_y_continuous(expand = c(0,0))+            
+  theme_minimal()+                
+  theme(plot.caption = element_text(hjust = 0, face = "italic"), 
+        axis.title = element_text(face = "bold"))+    
+  labs(
+    title    = "Weekly incidence of cases (Monday weeks)",
+    subtitle = "Note alignment of bars, vertical gridlines, and axis labels on Monday weeks",
+    x        = "Week of symptom onset",
+    y        = "Weekly incident cases reported",
+    caption  = stringr::str_glue("n = {nrow(surv)}; Case onsets range from {format(min(surv$date_onset, na.rm=T), format = '%a %d %b %Y')} to {format(max(surv$date_onset, na.rm=T), format = '%a %d %b %Y')}\n{nrow(surv %>% filter(is.na(date_onset)))} cases missing date of onset and not shown"))
+
+```
+
+## Outbreak details
+
+- Outbreak peaks with almost 40 cases on the week of September 22, 2014
+- The outbreak began the week of May 5, 2014
+
+## Deaths by Age
+
+```{r}
+surv %>% 
+  tabyl(age_cat, outcome) %>% 
+  adorn_totals(where = "row") %>% 
+  adorn_percentages(denominator = "row") %>% 
+  adorn_pct_formatting(digits = 1)
+```
+# Table by Hospital
+
+```{r}
+surv %>%                                                     # begin with linelist
+  select(c(case_id, fever, chills, cough, aches, vomit)) %>%     # select columns
+  pivot_longer(                                                  # pivot longer
+    cols = -case_id,                                  
+    names_to = "symptom_name",
+    values_to = "symptom_is_present") %>%
+  mutate(                                                        # replace missing values
+    symptom_is_present = replace_na(symptom_is_present, "unknown")) %>% 
+  
+  ggplot(                                                        # begin ggplot!
+    mapping = aes(x = symptom_name, fill = symptom_is_present))+
+  geom_bar(position = "fill", col = "black") +                    
+  theme_classic() +
+  labs(
+    x = "Symptom",
+    y = "Symptom status (proportion)"
+  )
+```
+

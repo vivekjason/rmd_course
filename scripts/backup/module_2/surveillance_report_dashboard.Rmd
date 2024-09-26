@@ -1,0 +1,346 @@
+---
+title: "Surveillance Report"
+author: "Your name here"
+date: "`r Sys.Date()`"
+output: 
+  flexdashboard::flex_dashboard:
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE )
+```
+
+```{r, load_packages, echo=FALSE}
+# Load packages
+pacman::p_load(
+  rio,           # for importing data
+  here,          # for locating files
+  janitor,       # for data cleaning  
+  lubridate,     # for date cleaning 
+  flextable,     # make HTML tables
+  scales,        # percents and date labels
+  epikit,        # format counts
+  gtsummary,     # for nice tables
+  tidyverse,     # for data management and visualization
+  crosstalk,     # put data in the right format for HTML widgets
+  DT,            # handles DataTables in flexdashboard
+  plotly,        # create interactive plots along with ggplot
+  leaflet,       # create interacitve plots 
+  sf,            # putting data in the right format to create maps
+  tmap,          # create interactive maps
+  epicontacts,   # data manipulation and analysis for contact tracing data
+  visNetwork,    # visualize contact networks
+  xts,           # plot time series 
+  dygraphs       # create interactive timer series plots 
+)
+```
+
+```{r}
+# Import data
+surv <- import(here("data", "clean", "linelist_combined_20141201.rds")) 
+```
+
+
+Data {data-icon="ion-stats-bars"}
+=====================================  
+
+Column {data-width=900}
+-------------------------------------
+
+### Downloadable Data
+    
+```{r datatable, echo=FALSE}
+
+sd <- SharedData$new(surv)
+
+sd %>% 
+  datatable(
+    filter = "top",  
+    extensions = c(
+      "Buttons", 
+      "Scroller"  
+    ),
+    rownames = FALSE, 
+    style = "bootstrap",
+    class = "compact",
+    width = "100%",
+    options = list(
+      dom = "Blrtip",  
+      deferRender = TRUE,
+      scrollY = 300,
+      scroller = TRUE,
+      columnDefs = list(
+        list(
+          visible = FALSE,
+          targets = c(2, 3, 5:15)
+        )
+      ), 
+      buttons = list(
+        I("colvis"),  
+        "csv",  
+        "excel"  
+      )
+    )
+  )
+
+```
+
+
+
+Column {data-width=900}
+-------------------------------------
+
+
+```{r, results = "asis"}
+# Generate weekly date sequence from Monday prior to first case 
+weekly_breaks <- seq.Date(
+      from = floor_date(min(surv$date_onset, na.rm=T), "week", week_start = 1), 
+      to   = ceiling_date(max(surv$date_onset, na.rm=T), "week", week_start = 1), 
+      by   = "week")     
+
+# Plot epi curve
+ggplot(data = surv) +              # set data
+  geom_histogram(
+    mapping = aes(x = date_onset), # date of onset
+    breaks = weekly_breaks,        # weekly breaks defined above
+    closed = "left",               # correct binning
+    color = "darkblue",            # bar lines color
+    fill = "lightblue")+           # bar fill color
+  scale_x_date(                    # x-axis adjustments
+    expand            = c(0,0),    # remove space below bars        
+    date_breaks       = "4 weeks", # major gridlines        
+    date_minor_breaks = "week",    # minor gridlines         
+    labels = scales::label_date_short())+ # auto-efficent date labels
+  scale_y_continuous(              # y-axis adjustments
+    expand = c(0,0))+              # remove extra space by axis
+  theme_minimal()+                 # white background
+  theme(                           # other theme adjustments
+    plot.caption = element_text(   # caption
+      hjust = 0,                   # left align
+      face = "italic"),            # italic
+    axis.title = element_text(     # axis adjustments
+      face = "bold"))+             # make bold
+  labs(                            # plot labels
+    title    = "Weekly case incidence ",
+    subtitle = "",
+    x        = "Week of symptom onset",
+    y        = "Weekly cases reported",
+    caption  = stringr::str_glue("n = {n_cases}; Shown in Monday weeks by symptom onset.\nOnset dates range from {min_date} to {max_date}\n{n_missing} cases missing date of onset and not shown",
+    n_cases = nrow(surv),
+    min_date = format(min(surv$date_onset, na.rm=T), format = '%a %d %b %Y'),
+    max_date = format(max(surv$date_onset, na.rm=T), format = '%a %d %b %Y'),
+    n_missing = fmt_count(surv, is.na(date_onset)))
+  )
+```
+
+Map {data-icon="ion-map"}
+=====================================  
+
+Column {data-width=700}
+-------------------------------------
+
+### Static Map
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+
+surv_sf <- surv %>%
+  mutate(lon = as.numeric(lon),
+         lat = as.numeric(lat)) %>%
+  filter(!is.na(lon) | !is.na(lat))%>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+sle_adm3_raw <- read_sf(here("data", "shp", "sle_adm3.shp"))
+
+sle_adm3 <- sle_adm3_raw %>%
+  janitor::clean_names() #%>% # standardize column names
+  # filter(admin2name %in% c("Western Area Urban", "Western Area Rural"))
+
+tm_shape(sle_adm3, bbox = c(-13.3, 8.43, -13.2, 8.5)) +     #
+  tm_polygons(col = "#F7F7F7") +
+  tm_borders(col = "#000000", lwd = 2) +
+  tm_text("admin3name")+
+tm_shape(surv_sf) +
+  tm_dots(size=0.08, col='blue', alpha = 0.5) +
+  tm_layout(title = "Distribution of Ebola cases")   # give title to map
+```
+
+Column {data-width=800}
+-------------------------------------
+
+### Dynamic Map
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+sle_hf <- sf::read_sf(here("data", "shp", "sle_hf.shp")) %>% 
+  janitor::clean_names() %>%
+  filter(amenity %in% c("hospital", "clinic", "doctors"))
+
+linelist_sf_hf <- surv_sf %>%                      # begin with linelist shapefile  
+  st_join(sle_hf, join = st_nearest_feature) %>%   # data from nearest clinic joined to case data 
+  select(case_id, osm_id, name, amenity) %>%       # keep columns of interest, including id, name, type, and geometry of healthcare facility
+  rename("nearest_clinic" = "name") 
+
+
+tmap_mode("view")   # set tmap mode to interactive  
+
+# plot the cases and clinic points 
+tm_shape(linelist_sf_hf) +            # plot cases
+  tm_dots(size=0.08,                  # cases colored by nearest clinic
+          col='nearest_clinic') +    
+tm_shape(sle_hf) +                    # plot clinic facilities in large black dots
+  tm_dots(size=0.3, col='black', alpha = 0.4) +      
+  tm_text("name") +                   # overlay with name of facility
+tm_view(set.view = c(-13.2284, 8.4699, 13), # adjust zoom (center coords, zoom)
+        set.zoom.limits = c(13,14))+
+tm_layout(title = "Cases, colored by nearest clinic")
+
+```
+
+# Epi {data-icon="ion-steam"}
+
+## Column {data-width=700}
+
+
+### Transmission Network: April - June 2014
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+linelist <- import(here("data", "clean","case_investigations_20141201.xlsx")) %>%
+  left_join(surv %>% select(case_id, outcome), by = c("case_id")) %>%
+  mutate(date_infection = as.Date(date_infection)) %>%
+  distinct()
+
+contacts <- linelist %>%
+  mutate(date_infection = as.Date(date_infection)) %>%
+  filter(date_infection >= as.Date("2014-04-01"),
+         date_infection <= as.Date("2014-07-01")) %>%
+  transmute(
+    infector = infector,
+    case_id = case_id,
+    source = source,
+    date_infection = date_infection
+  ) %>%
+  drop_na(infector)
+
+epic <- make_epicontacts(
+  linelist = linelist,
+  contacts = contacts,
+  id = "case_id",
+  from = "infector",
+  to = "case_id",
+  directed = TRUE
+) 
+
+
+plot(
+  epic, 
+  node_color = "outcome",
+  node_shape = "gender",
+  node_size = "age",
+  col_pal = spectral,
+  shapes = c(f = "female", m = "male"),
+  size_range = c(40, 60),
+  edge_color = 'source',
+  edge_col_pal = colorRampPalette(c(Community = "orange", Nosocomial = "purple")),
+  width_range = c(1, 3),
+  network_shape = "rectangle",
+  height = 700,
+  width = 700
+)
+
+```
+
+
+
+Column {data-width=800}
+-------------------------------------
+
+### Cases by Infection Date and Source 
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+
+linelist_viz <- linelist %>%
+  filter(!is.na(date_infection)) %>%
+  mutate(date_infection = as.Date(date_infection)) %>%
+  group_by(date_infection, source)%>%
+  summarise(Infections = n())
+
+
+# Make the interactive plot
+ggplotly(ggplot(data = linelist_viz, 
+       aes(x = date_infection, y = Infections,
+           group = source, color = source, fill = source))+
+  geom_bar(stat = "identity", position = "dodge")+
+    xlab("Date of Infection")+
+  scale_x_date(
+  expand            = c(0,0),            
+  date_breaks       = "4 weeks",        
+  date_minor_breaks = "week",           
+  labels = scales::label_date_short())+ 
+scale_y_continuous(expand = c(0,0))+            
+theme_minimal()+                
+theme(axis.title = element_text(face = "bold"))+    
+labs(
+  title    = "Daily incidence of cases by source",
+  subtitle = "Subtitle here",
+  x        = "Date of Infection",
+  y        = "Cases reported"))
+
+```
+
+Deaths {data-icon="ion-ios-settings"}
+=====================================  
+
+Column {data-width=600}
+-------------------------------------
+
+### Summary Table
+
+
+```{r gtsummary}
+surv %>%
+  select(fever, chills, cough, aches, vomit, outcome) %>%
+  tbl_summary(by = outcome)
+```
+
+
+
+Column {data-width=1000}
+-------------------------------------
+
+### Deaths vs. Infections
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+
+deaths <- surv %>%
+  filter(outcome == "Death", !is.na(date_outcome)) %>%
+  group_by(date_outcome) %>%
+  summarise(deaths = n()) %>%
+  rename(date = date_outcome) %>%
+  mutate(date = ymd(date))
+
+cases <- surv %>%
+  filter(!is.na(date_onset)) %>%
+  group_by(date_onset) %>%
+  summarise(cases = n()) %>%
+  rename(date = date_onset) %>%
+  mutate(date = ymd(date))
+
+deaths <- xts(x = deaths$deaths, order.by = deaths$date)
+cases <- xts(x = cases$cases, order.by = cases$date)
+
+combined <- cbind(cases, deaths)%>%
+  as.data.frame() %>%
+  mutate(cases = ifelse(is.na(cases), 0, cases),
+         deaths = ifelse(is.na(deaths), 0, deaths))
+
+# Chart
+dygraph(combined) %>%
+  dySeries("cases", label = "Cases") %>%
+  dySeries("deaths", label = "Deaths") %>%
+  dyOptions(stackedGraph = TRUE) %>%
+  dyRangeSelector(height = 20)
+
+```

@@ -1,0 +1,230 @@
+---
+title: "Surveillance Report"
+author: "Your name here"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    theme: "cerulean"
+    toc: true
+params:
+  district: East III
+  quantaudience: TRUE
+  report_date: !r lubridate::ymd("2014-12-01")
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE )
+```
+
+```{r load_packages, echo=FALSE}
+# Load packages
+pacman::p_load(
+  rio,          # for importing data
+  here,         # for locating files
+  janitor,      # for data cleaning  
+  lubridate,    # for date cleaning 
+  flextable,    # make HTML tables
+  epikit,       # formatting counts
+  officer,      # table borders
+  scales,       # for percents and plot dates
+  gtsummary,    # for nice tables
+  tidyverse     # for data management and visualization
+)
+
+```
+
+# Summary {.tabset}
+
+This is a demo situation report on a hypothetical outbreak of Ebola in Sierra Leone from 2014. It uses simulated data.  
+
+## About this report  
+
+This report was produced on `r Sys.Date()`. It uses cases reported from **`r params$district`** district, as of **`r params$report_date`**.
+
+## Data import and cleaning
+
+Below is the code used to import the case linelist and restrict it to relevant districts/dates.  
+
+```{r read_data}
+# Import data
+surv <- import(here("data", "clean", "linelist_combined_20141201.rds")) %>% 
+  filter(district == params$district) %>% 
+  filter(date_report <= params$report_date | is.na(date_report))
+```
+
+## Key numbers  
+
+```{r}
+# define the number of hospitals affected
+num_hosps <- surv %>%
+  pull(hospital) %>%
+  unique() %>%
+  # na.omit() %>%  # remove NA from list, if desired
+  length()
+
+# names of the hospitals
+hosp_names <- surv %>% 
+  pull(hospital) %>% 
+  unique() %>% 
+  fct_na_value_to_level(level = "Unknown") %>% # covert NA to "Unknown"
+  fct_infreq()                                 # Order by frequency
+```
+
+Key points about this outbreak:  
+
+* In total, there have been `r nrow(surv)` cases reported, with `r epikit::fmt_count(surv, outcome == "Death")` deaths.  
+* The first case was reported on `r min(surv$date_report, na.rm=T)`.   
+* The last case was reported on `r max(surv$date_report, na.rm=T)`.  
+* There are `r num_hosps` hospitals that have reported cases: `r paste(hosp_names, collapse = ", ")`.  
+
+
+
+
+# View case linelist  
+
+
+```{r show_data, eval=params$quantaudience}
+surv %>% 
+  head(20) %>%      # keep only the first 20 rows
+  DT::datatable(
+    rownames = FALSE,
+    filter = "top",
+    options = list(pageLength = 5, scrollX=T),
+    caption = "Table 1. Surveillance line list")
+```
+
+# Case summary by hospital
+
+```{r}
+# create a summary table of cases and their outcomes by hospital
+hosp_table <- surv %>% 
+  drop_na(hospital) %>%       # drop cases where hospital is not known or missing
+  count(hospital, outcome,    # count cases by hospital and outcome
+        name = "cases") %>%   # counts col is named "cases" 
+  mutate(                     # convert NA outcome to "Unknown"
+    outcome = fct_na_value_to_level(
+      outcome,
+      level = "Unknown")) %>% 
+  mutate(outcome = factor(outcome, levels = c("Recover", "Death"))) %>% 
+  pivot_wider(                # pivot outcomes into separate columns
+    values_from = cases,      
+    names_from = outcome,
+    names_expand = TRUE) %>%  # ensure Death appears in table even if none
+  mutate(Death = replace_na(Death, 0)) %>% # If no Deaths, write as 0 (not NA)
+  mutate(Known = Death + Recover) %>% # create number with known outcome
+  arrange(-Known) %>%                 # order by total cases, descending
+  adorn_totals(where = "row") %>%     # add a total row
+  mutate(                             # add new columns
+    pct_death = percent(Death / Known, 0.1),         # pct who died (1 decimal)
+    pct_recover = percent(Recover / Known, 0.1)) %>% # pct who recovered 
+  select(hospital, Known, Recover, pct_recover, Death, pct_death) # adjust order
+```
+
+```{r}
+# convert hospital table to an HTML output
+
+# define border styling
+border_style <- officer::fp_border(color="black", width=1)
+
+# convert hospital table to an HTML output
+hosp_table_flx <- hosp_table %>% 
+  
+  qflextable() %>%  # convert to flextable
+  
+  add_header_row(   # add top header row
+    top = TRUE,
+    values = c("Hospital", "Known", "Recovered", "", "Died", "")) %>% 
+  
+  set_header_labels(
+    Recover = "Count",
+    pct_recover = "Percent",
+    Death = "Count",
+    pct_death = "Percent"
+  ) %>% 
+  
+  # merge cells
+  merge_at(i = 1:2, j = 1, part = "header") %>% # merge rows 1 & 2 in column 1 
+  merge_at(i = 1:2, j = 2, part = "header") %>% # merge rows 1 & 2 in column 2
+  merge_at(i = 1, j = 3:4, part = "header") %>% # merge columns 3 & 4 in header row 1
+  merge_at(i = 1, j = 5:6, part = "header") %>% # merge columns 5 & 6 in header row 2  
+
+  # add vertical lines to separate Recovered and Died sections
+  vline(part = "all", j = 2, border = border_style) %>%   # at column 2 
+  vline(part = "all", j = 4, border = border_style) %>%   # at column 4
+  hline(part = "body", i = nrow(hosp_table)-1, border = border_style) %>%   # at last row
+
+  # align number columns to center
+  align_nottext_col("center") %>% 
+  
+  # Bold headers and total row
+  bold(i = 1:2, bold = TRUE, part = "header") %>% 
+  bold(i = nrow(hosp_table), bold = TRUE, part = "body") %>% 
+  
+  # background colors
+  bg(part = "body", bg = "gray95") %>% 
+  bg(j = nrow(hosp_table), i = ~pct_death >= 60, part = "body", bg = "red") %>% 
+  
+  #add footer
+  add_footer_lines(
+    values = str_glue(
+      "Cases reported as of {max_report_date}. Hospitals with >=60% case fatality highlighted.",
+      max_report_date = max(surv$date_report, na.rm = T))) %>% 
+  italic(part = "footer") %>% 
+  
+  # add title
+  add_header_lines(values = "Case outcomes by hospital") %>% 
+  align(part = "header", i = 1, align = "center")
+
+
+# print
+hosp_table_flx
+```
+
+
+# Epi curve for `r params$district`
+
+```{r}
+# Generate weekly date sequence from Monday prior to first case 
+weekly_breaks <- seq.Date(
+      from = floor_date(min(surv$date_onset, na.rm=T), "week", week_start = 1), 
+      to   = ceiling_date(max(surv$date_onset, na.rm=T), "week", week_start = 1), 
+      by   = "week")     
+
+# Plot epi curve
+ggplot(data = surv) +              # set data
+  geom_histogram(
+    mapping = aes(x = date_onset), # date of onset
+    breaks = weekly_breaks,        # weekly breaks defined above
+    closed = "left",               # correct binning
+    color = "darkblue",            # bar lines color
+    fill = "lightblue")+           # bar fill color
+  scale_x_date(                    # x-axis adjustments
+    expand            = c(0,0),    # remove space below bars        
+    date_breaks       = "4 weeks", # major gridlines        
+    date_minor_breaks = "week",    # minor gridlines         
+    labels = scales::label_date_short())+ # auto-efficent date labels
+  scale_y_continuous(              # y-axis adjustments
+    expand = c(0,0))+              # remove extra space by axis
+  theme_minimal()+                 # white background
+  theme(                           # other theme adjustments
+    plot.caption = element_text(   # caption
+      hjust = 0,                   # left align
+      face = "italic"),            # italic
+    axis.title = element_text(     # axis adjustments
+      face = "bold"))+             # make bold
+  labs(                            # plot labels
+    title    = "Weekly case incidence ",
+    subtitle = "",
+    x        = "Week of symptom onset",
+    y        = "Weekly cases reported",
+    caption  = stringr::str_glue("n = {n_cases} from {params$district}; Shown in Monday weeks by symptom onset.\nOnset dates range from {min_date} to {max_date}\n{n_missing} cases missing date of onset and not shown",
+    n_cases = nrow(surv),
+    min_date = format(min(surv$date_onset, na.rm=T), format = '%a %d %b %Y'),
+    max_date = format(max(surv$date_onset, na.rm=T), format = '%a %d %b %Y'),
+    n_missing = fmt_count(surv, is.na(date_onset)))
+  )
+```
+
+
+
